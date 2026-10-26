@@ -26,6 +26,12 @@ from autogen import AssistantAgent, UserProxyAgent
 from llm_client import DEFAULT_MODEL
 from task import TASK_DESCRIPTION
 from tools.code_tools import dispatch, exec_python, read_file, write_file
+from tools.code_tools import (
+    EXEC_PYTHON_SCHEMA,
+    READ_FILE_SCHEMA,
+    WORKSPACE,
+    WRITE_FILE_SCHEMA,
+)
 from tools.token_counter import UsageTracker
 from dotenv import load_dotenv
 
@@ -70,10 +76,23 @@ def _llm_config() -> dict:
 # The three tool functions (read_file, write_file, exec_python) are imported
 # directly from tools.code_tools above.
 
-SYSTEM_PROMPT = """You are a Coder Agent. Use the available tools to complete
+MAX_RESPONSE_TOKENS = 2048
+
+SYSTEM_PROMPT = f"""You are a Coder Agent. Use the available tools to complete
 the user's task step by step. When the task is fully done, output the single
 word DONE on its own line and nothing else. Do NOT use code blocks for tool
-calls – call the registered functions directly."""
+calls – call the registered functions directly.
+
+read_file and write_file take paths relative to the workspace directory
+{WORKSPACE}. exec_python runs from a different directory, so code you execute
+must use that absolute path, e.g. `import os, sys; os.chdir({str(WORKSPACE)!r});
+sys.path.insert(0, {str(WORKSPACE)!r})`."""
+
+_TOOLS = [
+    (READ_FILE_SCHEMA, read_file),
+    (WRITE_FILE_SCHEMA, write_file),
+    (EXEC_PYTHON_SCHEMA, exec_python),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -97,10 +116,18 @@ def make_assistant() -> AssistantAgent:
              WRITE_FILE_SCHEMA, EXEC_PYTHON_SCHEMA).
     3. Return the agent.
 
-    Raises:
-        NotImplementedError: Remove this line once you implement the function.
     """
-    raise NotImplementedError("Implement make_assistant()")
+    llm_config = _llm_config()
+    # Caps each reply so OpenRouter doesn't reserve the model's full output budget
+    llm_config["max_tokens"] = MAX_RESPONSE_TOKENS
+    agent = AssistantAgent(
+        name="coder_agent",
+        system_message=SYSTEM_PROMPT,
+        llm_config=llm_config,
+    )
+    for schema, function in _TOOLS:
+        agent.register_for_llm(name=schema["name"], description=schema["description"])(function)
+    return agent
 
 
 def make_proxy() -> UserProxyAgent:
@@ -121,10 +148,17 @@ def make_proxy() -> UserProxyAgent:
        Register the same three functions as in make_assistant().
     3. Return the proxy.
 
-    Raises:
-        NotImplementedError: Remove this line once you implement the function.
     """
-    raise NotImplementedError("Implement make_proxy()")
+    proxy = UserProxyAgent(
+        name="user_proxy",
+        human_input_mode="NEVER",
+        max_consecutive_auto_reply=15,
+        is_termination_msg=lambda msg: "DONE" in (msg.get("content") or ""),
+        code_execution_config=False,
+    )
+    for schema, function in _TOOLS:
+        proxy.register_for_execution(name=schema["name"])(function)
+    return proxy
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +175,9 @@ def _record_usage(chat_result: autogen.ChatResult) -> None:
     usage = getattr(chat_result, "cost", {})
     # usage dict shape: {"usage_including_cached_inference": {model: {prompt_tokens, ...}}}
     for model_data in usage.get("usage_including_cached_inference", {}).values():
+        # The dict also holds a "total_cost" number alongside the per-model dicts
+        if not isinstance(model_data, dict):
+            continue
         prompt = model_data.get("prompt_tokens", 0)
         completion = model_data.get("completion_tokens", 0)
         if prompt or completion:
@@ -161,7 +198,8 @@ def run() -> str:
     #   - message=TASK_DESCRIPTION
     #   - max_turns=15
     # Store the result in `result`, then call _record_usage(result).
-    raise NotImplementedError("Call proxy.initiate_chat() here")
+    result = proxy.initiate_chat(recipient=assistant, message=TASK_DESCRIPTION, max_turns=15)
+    _record_usage(result)
 
     tracker.print_summary()
 

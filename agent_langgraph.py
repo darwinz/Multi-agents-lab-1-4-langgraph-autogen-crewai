@@ -29,7 +29,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
 from llm_client import DEFAULT_MODEL, get_client
 from task import TASK_DESCRIPTION
-from tools.code_tools import ALL_SCHEMAS, dispatch
+from tools.code_tools import ALL_SCHEMAS, WORKSPACE, dispatch
 from tools.token_counter import UsageTracker
 
 # ---------------------------------------------------------------------------
@@ -54,10 +54,17 @@ tracker = UsageTracker(framework="LangGraph")
 # ---------------------------------------------------------------------------
 
 MAX_STEPS = 15
+# Caps each reply so OpenRouter doesn't reserve the model's full output budget
+MAX_RESPONSE_TOKENS = 2048
 
-SYSTEM_PROMPT = """You are a Coder Agent. Use the available tools to complete
+SYSTEM_PROMPT = f"""You are a Coder Agent. Use the available tools to complete
 the user's task step by step. When the task is fully done, output the single
-word DONE on its own line and nothing else."""
+word DONE on its own line and nothing else.
+
+read_file and write_file take paths relative to the workspace directory
+{WORKSPACE}. exec_python runs from a different directory, so code you execute
+must use that absolute path, e.g. `import os, sys; os.chdir({str(WORKSPACE)!r});
+sys.path.insert(0, {str(WORKSPACE)!r})`."""
 
 
 def tool_node(state: AgentState) -> dict:
@@ -99,10 +106,37 @@ def agent_node(state: AgentState) -> dict:
        done=True in the returned state dict.
     7. Return {"messages": [response], "step_count": ..., "done": ...}.
 
-    Raises:
-        NotImplementedError: Remove this line once you implement the function.
     """
-    raise NotImplementedError("Implement agent_node()")
+    from langchain_core.messages import SystemMessage
+
+    openai_client = get_client()
+    # langchain-openai 1.x has no `openai_client` kwarg; an injected client goes
+    # in `root_client` (the OpenAI instance) and `client` (its chat.completions)
+    llm = ChatOpenAI(
+        model=DEFAULT_MODEL,
+        root_client=openai_client,
+        client=openai_client.chat.completions,
+        max_tokens=MAX_RESPONSE_TOKENS,
+    ).bind_tools(ALL_SCHEMAS)
+
+    messages = state["messages"]
+    if messages[0].type != "system":
+        messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+
+    start = time.time()
+    response = llm.invoke(messages)
+    usage = response.response_metadata.get("token_usage", {})
+    tracker.record_step(
+        prompt_tokens=usage.get("prompt_tokens", 0),
+        completion_tokens=usage.get("completion_tokens", 0),
+        latency_s=time.time() - start,
+    )
+
+    return {
+        "messages": [response],
+        "step_count": state["step_count"] + 1,
+        "done": "DONE" in (response.content or ""),
+    }
 
 
 # ---------------------------------------------------------------------------

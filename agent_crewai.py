@@ -22,13 +22,14 @@ from __future__ import annotations
 import os
 import time
 
-from crewai import Agent, Crew, Task
+from crewai import LLM, Agent, Crew, Task
 from crewai.tools import tool as crewai_tool
 from langchain_openai import ChatOpenAI
 
 from llm_client import DEFAULT_MODEL
 from task import TASK_DESCRIPTION
 from tools.code_tools import exec_python, read_file, write_file
+from tools.code_tools import WORKSPACE
 from tools.token_counter import UsageTracker
 from dotenv import load_dotenv
 
@@ -41,13 +42,24 @@ tracker = UsageTracker(framework="CrewAI")
 # ---------------------------------------------------------------------------
 
 
-def _make_llm() -> ChatOpenAI:
+MAX_RESPONSE_TOKENS = 2048
+
+
+def _make_llm() -> LLM:
+    # CrewAI 1.x converts a LangChain ChatOpenAI into its own LLM and drops
+    # default_headers, so Helicone-Auth never got sent. Build CrewAI's LLM directly.
+    _HELICONE_BASE = os.getenv("HELICONE_BASE_URL")
+    _OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     _HELICONE_API_KEY = os.getenv("HELICONE_API_KEY")
 
-    return ChatOpenAI(
+    return LLM(
         model=DEFAULT_MODEL,
+        base_url=_HELICONE_BASE,
+        api_key=_OPENROUTER_API_KEY,
         default_headers={"Helicone-Auth": f"Bearer {_HELICONE_API_KEY}"},
         temperature=0,
+        # Caps each reply so OpenRouter doesn't reserve the model's full output budget
+        max_tokens=MAX_RESPONSE_TOKENS,
     )
 
 
@@ -80,10 +92,24 @@ def make_tools() -> list:
             \"\"\"One-line description.\"\"\"
             return some_function(x)
 
-    Raises:
-        NotImplementedError: Remove this line once you implement the function.
     """
-    raise NotImplementedError("Implement make_tools()")
+
+    @crewai_tool
+    def crewai_read_file(path: str) -> str:
+        """Read a file from the sandbox workspace, given its path relative to the workspace."""
+        return read_file(path)
+
+    @crewai_tool
+    def crewai_write_file(path: str, content: str) -> str:
+        """Write text content to a file in the sandbox workspace, given its path relative to the workspace."""
+        return write_file(path, content)
+
+    @crewai_tool
+    def crewai_exec_python(code: str) -> str:
+        """Execute a Python code snippet in a subprocess and return its stdout + stderr."""
+        return exec_python(code)
+
+    return [crewai_read_file, crewai_write_file, crewai_exec_python]
 
 
 def make_agent(tools: list) -> Agent:
@@ -103,10 +129,22 @@ def make_agent(tools: list) -> Agent:
        - max_iter=15
     2. Return the agent.
 
-    Raises:
-        NotImplementedError: Remove this line once you implement the function.
     """
-    raise NotImplementedError("Implement make_agent()")
+    return Agent(
+        role="Coder Agent",
+        goal="Complete the assigned coding task correctly and efficiently.",
+        backstory=(
+            "You are an expert Python developer who always writes clean, tested code. "
+            "Your file tools take paths relative to the workspace directory "
+            f"{WORKSPACE}. Python you execute runs from a different directory, so it "
+            "must use that absolute path, e.g. "
+            f"`import os, sys; os.chdir({str(WORKSPACE)!r}); sys.path.insert(0, {str(WORKSPACE)!r})`."
+        ),
+        tools=tools,
+        llm=_make_llm(),
+        verbose=True,
+        max_iter=15,
+    )
 
 
 def make_task(agent: Agent) -> Task:
@@ -122,10 +160,12 @@ def make_task(agent: Agent) -> Task:
        - agent=agent
     2. Return the task.
 
-    Raises:
-        NotImplementedError: Remove this line once you implement the function.
     """
-    raise NotImplementedError("Implement make_task()")
+    return Task(
+        description=TASK_DESCRIPTION,
+        expected_output="The word_freq.py module is written, tested, and produces correct output.",
+        agent=agent,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +200,9 @@ def run() -> str:
     #   - verbose=True
     # Call crew.kickoff() and store the result in `output`.
     # Then call _record_usage(crew).
-    raise NotImplementedError("Create Crew and call kickoff() here")
+    crew = Crew(agents=[agent], tasks=[task], verbose=True)
+    output = crew.kickoff()
+    _record_usage(crew)
 
     tracker.print_summary()
     return str(output)

@@ -1,0 +1,32 @@
+{
+  "run_at": "2026-10-26T21:22:41.442082",
+  "results": [
+    {
+      "framework": "LangGraph",
+      "step_count": 4,
+      "total_prompt_tokens": 3473,
+      "total_completion_tokens": 550,
+      "total_tokens": 4023,
+      "elapsed_s": 7.56,
+      "status": "ok"
+    },
+    {
+      "framework": "AutoGen",
+      "step_count": 1,
+      "total_prompt_tokens": 3425,
+      "total_completion_tokens": 559,
+      "total_tokens": 3984,
+      "elapsed_s": 7.72,
+      "status": "ok"
+    },
+    {
+      "framework": "CrewAI",
+      "step_count": 1,
+      "total_prompt_tokens": 2667,
+      "total_completion_tokens": 941,
+      "total_tokens": 3608,
+      "elapsed_s": 9.98,
+      "status": "ok"
+    }
+  ]
+}
